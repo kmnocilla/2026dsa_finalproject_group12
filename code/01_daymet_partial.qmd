@@ -75,6 +75,8 @@ fieldd12 <- field12 %>%
                   longitude >= -178.133 & longitude <= -53.0567)# %>% 
   rename(lon = longitude,
          lat = latitude)
+  
+  summary(fieldd12)
 ```
 
 
@@ -116,22 +118,23 @@ daymet_all$weather[1]
 
 Now let's unnest the weather column.  
 ```{r}
-daymet_all_unnest <- daymet_all %>% 
+daymet_all_unnes <- daymet_all %>% 
   unnest(weather) %>%
   pivot_wider(names_from = measurement,
               values_from = value
               ) %>%
-  janitor::clean_names()
+    janitor::clean_names()
+
+```
+Now, unnest the weather variable
+```{r}
+daymet_all_unnest <- daymet_all_unnes %>% 
+  unnest(dayl_s:vp_pa)
 
 daymet_all_unnest
-
 ```
 
-Converting the weather parameter columns from list to numeric
-```{r}
-daymet_all_unnest <- daymet_all_unnest %>%
-  mutate(across(where(is.list), ~ as.double(.x)))
-```
+
 
 
 # Exporting  

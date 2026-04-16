@@ -1,20 +1,7 @@
----
-title: "Feature Engineering"
-format: html
----
-
-
-# Setup  
-```{r}
-#| message: false
-#| warning: false
-
 library(tidyverse)
 
 here::here()
-```
 
-```{r}
 fieldweather <- read_cs(here("data", "fieldd12weatherdata.csv"))
 
 
@@ -28,17 +15,11 @@ fieldweather
 soil
 trait
 
-```
 
-Seperate site column in fieldsoil data into site and year and use site column to join the three dataset into one for ease of working with one dataset
-```{r}
 fieldsoil <- soil %>%
   separate(site, into = c("site", "year"), sep = "_") %>% 
   mutate(year = as.double(year)) #to keep the joining coulmn all in same data type in the different datset
-```
 
-
-```{r}
 fieldprp <- fieldweather %>% 
   left_join(fieldsoil, 
             by = c("year", "site")
@@ -48,24 +29,12 @@ fieldprp <- fieldweather %>%
             )
 
    
-```
 
-Our data set contains **91,980** rows comprised by **252** site-years (valid sites in Daymet) and **365** days/site-year worth of weather data.  
-
-# EDA  
-```{r}
 summary(fieldprp)
-```
 
-Let's select important variables/columns
-```{r}
 fieldprpty <- fieldprp %>% 
   dplyr::select(dayl_s:grain_moisture, -replicate, -block, -hybrid, -date_planted, -date_harvested)
-```
 
-
-Let's create some density plots to explore the weather data distributions.  
-```{r}
 knitr::purl("2_featureeng_partial.qmd", output = "2_sapelo_script.R", documentation = 0)
 
 
@@ -75,20 +44,9 @@ fieldprpty %>%
   geom_density() +
   facet_wrap(~name, scales = "free")
 
-```
 
-# Feature engineering  
-Let's take another look at the data at hand:
-```{r}
 fieldweather
-```
 
-Currently, we have weather data for each site-year at a **daily** time interval.  
-
-
-Next, let's create a column containing the month information.  
-
-```{r fe_month}
 fe_month <- fieldweather %>%
   # Selecting needed variables
   dplyr::select(year, site, lat, lon,
@@ -111,10 +69,7 @@ fe_month <- fieldweather %>%
 
 #help(paste0)
 fe_month
-```
 
-Now, let's summarize daily weather variables based on month.  
-```{r fe_month_sum}
 fe_month_sum <- fe_month %>%
   group_by(year, site, month_abb, strength_gtex) %>%
   summarise(across(.cols = c(dayl.s,
@@ -136,13 +91,7 @@ fe_month_sum <- fe_month %>%
 
 
 fe_month_sum
-```
 
-8,376 rows because 698 site-years x 12 months.  
-
-Let's check tmax.c and prcp.mm for the first site-year and month.  
-
-```{r}
 fe_month %>%
   filter(year == 1980 & 
            site == "Altus, OK" &
@@ -150,11 +99,7 @@ fe_month %>%
   summarise(tmax.c = mean(tmax.c),
             prcp.mm = sum(prcp.mm)) #%>%
   
-```
 
-Now, what if we wanted to have month as part of the column name instead?  
-
-```{r fe_month_sum_wide}
 fe_month_sum_wide <- fe_month_sum %>%
   pivot_longer(mean_dayl.s:sum_prcp.mm)%>%
   mutate(varname = paste0(name, "_",month_abb)) %>%
@@ -167,17 +112,7 @@ fe_month_sum_wide <- fe_month_sum %>%
 
 
 fe_month_sum_wide  
-```
-Notice how we are back at **698** rows.  
 
-For each site-year, we have one piece of weather information for each of the weather variables (as opposed to the original Daymet data that had 365 rows per site-year).  
-
-Let's explore our newly engineered variables.  
-
-# EDA round 2  
-Let's make a ridge plot to visualize the distribution of one variable over months.  
-
-```{r}
 #install.packages("ggridges")
 library(ggridges)
 
@@ -195,10 +130,7 @@ ggplot(data = fe_month_sum,
   labs(x = "Monthly-average maximum temp (C)",
        y = "Month"
        )
-```
 
-Now let's do that for all variables.  
-```{r}
 finalplots <- fe_month_sum %>%
   pivot_longer(mean_dayl.s:sum_prcp.mm) %>%
   group_by(name) %>%
@@ -223,28 +155,8 @@ finalplots <- fe_month_sum %>%
 
   
 finalplots$plot
-```
-
-```{r}
-#| message: false
 
 finalplots$plot
-```
 
-# Exporting  
-```{r}
 write_csv(fe_month_sum_wide,
           "../data/weather_monthsum.csv")
-```
-
-# Summary  
-In this exercise, we:  
-  - Imported the original **7** weather variables from Daymet  
-  - Feature engineered a total of **72** secondary variables by applying a summarizing window size of **month** and a summarizing function of **mean or sum**.  
-  - Explored the data distribution of the new variables.  
-  - Exported to file to be used in subsequent exercises.
-
-
-
-
-  
