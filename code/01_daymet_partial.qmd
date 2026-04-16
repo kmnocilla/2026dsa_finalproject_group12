@@ -67,7 +67,6 @@ daymet_one %>%
 ```
 
 
-**NOTE**: since we only have coordinates without states, and we do not know if they are all covered by Daymet, let us filter coordinated within Daymet coverage. According to the information on https://www.earthdata.nasa.gov/data/catalog/ornl-cloud-daymet-daily-v4r1-2129-4.1 Daymet coverage include (N: 82.9143 S: 14.0749 E: -53.0567 W: -178.133).  
 
 ```{r}
 fieldd12 <- field12 %>% 
