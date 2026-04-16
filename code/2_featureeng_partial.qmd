@@ -10,26 +10,30 @@ format: html
 #| warning: false
 
 library(tidyverse)
+library(readxl) # to read excel files
+library(janitor) # to clean data
+library(dplyr) # wrangling
+library(tidyr) # wrangling
+library(readr) # to export csv
+
 
 here::here()
 knitr::purl("2_featureeng_partial.qmd", output = "2_sapelo_script.R", documentation = 0)
 ```
 
 ```{r}
-fieldweather <- read_cs(here("data", "fieldd12weatherdata.csv"))
-
-
 fieldweather <- read_csv("../data/fieldd12weatherdata.csv")
 
 soil <- read_csv("../data/training/training_soil.csv")
 
 trait <- read_csv("../data/training/training_trait.csv")
 
-fieldweather
-soil
-trait
+summary(fieldweather)
+summary(soil)
+summary(trait)
 
 ```
+
 
 Seperate site column in fieldsoil data into site and year and use site column to join the three dataset into one for ease of working with one dataset
 ```{r}
@@ -40,7 +44,47 @@ fieldsoil <- soil %>%
 
 
 ```{r}
-fieldprp <- fieldweather %>% 
+fe_month <- fieldweather %>%
+  # Selecting needed variables
+  dplyr::select(year, site, lat, lon,
+                yday,
+                dayl.s = dayl_s, 
+                prcp.mm = prcp_mm_day,
+                srad.wm2 = srad_w_m_2, 
+                tmax.c = tmax_deg_c, 
+                tmin.c = tmin_deg_c,
+                vp.pa = vp_pa
+                ) %>%
+  # Creating a date class variable  
+  mutate(date_chr = paste0(year, "/", yday)) %>%
+  mutate(date = as.Date(date_chr, "%Y/%j")) %>%
+  # Extracting month from date  
+  mutate(month = month(date)) %>%
+  mutate(month_abb = month(date, label = T))
+```
+
+```{r}
+fe_month_sum <- fe_month %>%
+  group_by(year, site, month_abb) %>%
+  summarise(across(.cols = c(dayl.s,
+                             srad.wm2,
+                             tmax.c,
+                             tmin.c,
+                             vp.pa
+                             ),
+                   .fns = mean, 
+                   .names = "mean_{.col}"
+                   ),
+            across(.cols = prcp.mm,
+                   .fns = sum,
+                   .names = "sum_{.col}"
+                   )
+            ) %>%
+  ungroup()
+```
+
+```{r}
+fieldprp <- fe_month_sum %>% 
   left_join(fieldsoil, 
             by = c("year", "site")
             ) %>% 
@@ -48,9 +92,7 @@ fieldprp <- fieldweather %>%
             by = c("year", "site")
             )
 
-   
 ```
-
 
 
 # EDA  
