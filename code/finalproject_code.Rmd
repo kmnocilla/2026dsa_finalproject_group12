@@ -19,11 +19,11 @@ library(shapviz)
 set.seed(238472)
 
 # ----------LOAD TRAINING DATA------------
-train_trait <- read_csv("data/training/training_trait.csv") %>% 
+train_trait <- read_csv("../data/training/training_trait.csv") %>% 
   clean_names() 
-train_meta <- read_csv("data/training/training_meta.csv") %>% 
+train_meta <- read_csv("../data/training/training_meta.csv") %>% 
   clean_names() 
-train_soil <- read_csv("data/training/training_soil.csv") %>% 
+train_soil <- read_csv("../data/training/training_soil.csv") %>% 
   clean_names()
 
 # ----------FIXING SOIL SITE COLUMN---------------
@@ -62,11 +62,11 @@ train_full <- train_trait_clean %>%
 
 ```{r}
 # ----------LOAD TESTING DATA------------
-test_meta <- read_csv("data/testing/testing_meta.csv") %>% 
+test_meta <- read_csv("../data/testing/testing_meta.csv") %>% 
   clean_names()
-test_soil <- read_csv("data/testing/testing_soil.csv") %>% 
+test_soil <- read_csv("../data/testing/testing_soil.csv") %>% 
   clean_names()
-test_sub  <- read_csv("data/testing/testing_submission.csv") %>% 
+test_sub  <- read_csv("../data/testing/testing_submission.csv") %>% 
   clean_names()
 
 # ----------FIXING SOIL SITE COLUMN---------------
@@ -95,7 +95,7 @@ library(slider)
 #----------CREATE PLANTING AND HARVEST WINDOWS (BY SITE)------
 site_calendar <- train_full %>%
   mutate(
-    plant_doy = yday(date_harvested),
+    plant_doy = yday(date_planted),
     harvest_doy = yday(date_harvested)
   ) %>%
   group_by(site) %>%
@@ -112,6 +112,10 @@ train_full <- train_full %>%
     harvest_doy = yday(date_harvested)
   ) %>%
   left_join(site_calendar, by = "site")
+
+test_full %>%
+  left_join(site_calendar, by = "site") %>%
+  names()
 
 test_full <- test_full %>%
   left_join(site_calendar, by = "site") %>%
