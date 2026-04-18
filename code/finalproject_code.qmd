@@ -4,7 +4,7 @@ output: html_document
 date: "2026-04-16"
 ---
 
-# ----------LOAD PACKAGES FOR THE PROJECT------------
+# ----------LOAD THE PACKAGES FOR PROJECT------------
 ```{r}
 
 #| message: false
