@@ -1,0 +1,442 @@
+---
+title: "Final_project_script"
+output: html_document
+date: "2026-04-16"
+---
+
+# ----------LOAD PACKAGESA------------
+```{r}
+
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(here)
+library(vip)          
+library(xgboost)      
+library(ranger)       
+library(tidyverse)    
+library(doParallel)   
+library(shapviz)
+library(tidymodels)
+library(recipes)
+library(rsample)
+
+#knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
+
+```
+
+# ----------LOAD TRAINING DATA------------
+```{r}
+#| message: false
+#| warning: false
+
+train_meta <- read_csv("../data/training/training_meta.csv") %>% 
+  janitor::clean_names() 
+train_trait <- read_csv("../data/training/training_trait.csv") %>% 
+  janitor::clean_names() 
+train_soil <- read_csv("../data/training/training_soil.csv") %>% 
+  janitor::clean_names()
+
+```
+
+# ------------AGGREGATE TRAINING TRAITS-------------
+```{r}
+#| message: false
+#| warning: false
+
+train_trait_clean <- train_trait %>%
+  mutate(
+    date_planted = mdy(date_planted),
+    date_harvested = mdy(date_harvested)
+  ) %>%
+  group_by(site, year, hybrid) %>%
+  summarize(
+    yield = mean(yield_mg_ha, na.rm = T),
+    grain_moisture = mean(grain_moisture, na.rm = T),
+    date_planted = min(date_planted, na.rm = T),
+    date_harvested = max(date_harvested, na.rm = T),
+    .groups = "drop"
+  )
+
+head(train_trait_clean)
+```
+
+
+# -------------MERGE------------
+
+```{r}
+#| message: false
+#| warning: false
+
+train_full <- train_trait_clean %>%
+  left_join(train_meta, by = c("site", "year")) %>%
+  left_join(train_soil, by = c("site", "year")) %>% 
+  mutate(across(soilp_h:soilp_ppm, as.numeric))
+
+```
+
+
+# ----------LOAD TESTING DATA------------
+```{r}
+#| message: false
+#| warning: false
+
+test_meta <- read_csv("../data/testing/testing_meta.csv") %>% 
+  janitor::clean_names() 
+test_soil <- read_csv("../data/testing/testing_soil.csv") %>% 
+  janitor::clean_names() 
+test_sub  <- read_csv("../data/testing/testing_submission.csv") %>% 
+  janitor::clean_names() 
+
+head(test_sub)
+head(test_meta)
+head(test_soil)
+
+table(test_meta$previous_crop)
+summary(test_soil)
+summary(test_sub)
+```
+
+# ----------FIXING SOIL SITE COLUMN---------------
+```{r}
+#| message: false
+#| warning: false
+
+test_soil <- test_soil %>%
+  separate(site, into = c("site", "year"), sep = "_") %>%
+  mutate(year = as.integer(year)) %>%
+  group_by(site, year)
+
+head(test_soil)
+```
+
+# -----------CLEAN META--------------
+```{r}
+#| message: false
+#| warning: false
+
+test_meta <- test_meta %>%
+  mutate(previous_crop = str_to_lower(previous_crop)) %>%
+  group_by(site, year)
+```
+
+# -------------MERGE------------
+```{r}
+#| message: false
+#| warning: false
+
+test_full <- test_sub %>% 
+  rename(yield = yield_mg_ha) %>%
+  left_join(test_meta, by = c("site", "year")) %>%
+  left_join(test_soil, by = c("site", "year"))
+
+head(test_full)
+```
+
+#----------CREATE PLANTING AND HARVEST WINDOWS (BY SITE)------
+```{r}
+#| message: false
+#| warning: false
+
+library(daymetr)
+library(slider)
+
+site_calendar <- train_full %>%
+  mutate(
+    plant_doy = yday(date_planted),
+    harvest_doy = yday(date_harvested)
+  ) %>%
+  group_by(site) %>%
+  summarize(
+    typical_plant_doy = round(median(plant_doy, na.rm = T)),
+    typical_harvest_doy = round(median(harvest_doy, na.rm = T)),
+    .groups = "drop"
+  )
+```
+
+#-----------ADDING P/H WINDOWS TO TESTING AND TRAINING DATA------------
+```{r}
+#| message: false
+#| warning: false
+
+train_full <- train_full %>%
+    mutate(
+    plant_doy = yday(date_planted),
+    harvest_doy = yday(date_harvested)
+  ) %>%
+  left_join(site_calendar, by = "site")
+
+# test_full %>%
+#   left_join(site_calendar, by = "site") %>%
+#   names()
+
+test_full <- test_full %>%
+  left_join(site_calendar, by = "site") %>%
+  mutate(
+    plant_doy = typical_plant_doy,
+    harvest_doy = typical_harvest_doy
+  )
+```
+
+
+#-----FILLING IN MISSING DATE OF YEAR VALUES-------
+```{r}
+#| message: false
+#| warning: false
+
+
+global_plant_doy <- round(median(train_full$plant_doy, na.rm = T))
+global_harvest_doy <- round(median(train_full$harvest_doy, na.rm = T))
+```
+
+
+#------ADDING MISSING VALUES TO TRAINING AND TESTING DATA-------
+```{r}
+#| message: false
+#| warning: false
+
+train_full <- train_full %>%
+  mutate(
+    plant_doy = coalesce(plant_doy, typical_plant_doy, global_plant_doy),
+    harvest_doy = coalesce(harvest_doy, typical_harvest_doy, global_harvest_doy)
+  )
+test_full <- test_full %>%
+  mutate(
+    plant_doy = coalesce(plant_doy, typical_plant_doy, global_plant_doy),
+    harvest_doy = coalesce(harvest_doy, typical_harvest_doy, global_harvest_doy)
+  )
+```
+
+
+#-------CREATING A SITE-YEAR LIST-------
+```{r}
+#| message: false
+#| warning: false
+
+all_site_years <- bind_rows(
+  train_full %>% distinct(site, year, latitude, longitude, plant_doy, harvest_doy),
+  test_full %>% distinct(site, year, latitude, longitude, plant_doy, harvest_doy)
+) %>%
+  arrange(site, year)
+
+head(all_site_years)
+```
+
+
+#---------FIXING ANY POS LONGITUDE NUMBERS (NORTH AMERICA HAS NEG LONGITUDE)--------
+```{r}
+  all_site_years <- all_site_years %>%
+   mutate(
+     longitude = if_else(longitude > 0 & longitude < 180, -longitude, longitude)
+   )
+```
+
+<!-- #----------PULLING DAYMET DATA---------- -->
+<!-- ```{r} -->
+<!-- get_daymet_one <- function(site, year, lat, lon) { -->
+<!--   tryCatch({ -->
+<!--     out <- download_daymet( -->
+<!--       site = paste0(site, "_", year), -->
+<!--       lat = lat, -->
+<!--       lon = lon, -->
+<!--       start = year, -->
+<!--       end = year, -->
+<!--       internal = T, -->
+<!--       silent = T -->
+<!--     ) -->
+
+<!--     out$data %>% -->
+<!--       as_tibble() %>% -->
+<!--       mutate(site = site, year = year) -->
+
+<!--   }, error = function(e) { -->
+<!--     message(paste("Skipping:", site, year)) -->
+<!--     return(NULL) -->
+<!--   }) -->
+<!-- } -->
+
+
+
+<!-- weather_list <- purrr::pmap( -->
+<!--   all_site_years, -->
+<!--   ~ get_daymet_one(site = ..1, year = ..2, lat = ..3, lon = ..4) -->
+<!-- ) -->
+
+<!-- weather_daily <- bind_rows(weather_list) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- names(weather_daily) -->
+<!-- ``` -->
+
+<!-- #------------FEATURE ENGINEERING WEATHER VARIABLES------------ -->
+<!-- ```{r} -->
+<!-- weather_daily <- weather_daily %>% -->
+<!--   mutate( -->
+<!--     tmean = (tmax..deg.c. + tmin..deg.c.) / 2, -->
+<!--     tmax_cap = pmin(tmax..deg.c., 30), -->
+<!--     tmin_cap = pmax(tmin..deg.c., 10), -->
+<!--     gdd10_30 = pmax(((tmax_cap + tmin_cap) / 2) - 10, 0), -->
+<!--     hot_day_32 = as.integer(tmax..deg.c. > 32), -->
+<!--     hot_night_21 = as.integer(tmin..deg.c. > 21), -->
+<!--     dry_day = as.integer(prcp..mm.day. < 1), -->
+<!--     rad_mj_m2 = (srad..W.m.2. * dayl..s.) / 1e6 -->
+<!--   ) -->
+<!-- ``` -->
+
+
+<!-- #-----------SUMMARIZE WEATHER VARIABLES------------ -->
+<!-- ```{r} -->
+<!-- weather_features <- weather_daily %>% -->
+<!--   mutate( -->
+<!--     tmean = (tmax..deg.c. + tmin..deg.c.) / 2, -->
+<!--     gdd = pmax(tmean - 10, 0), -->
+<!--     hot_days = as.integer(tmax..deg.c. > 32), -->
+<!--     hot_nights = as.integer(tmin..deg.c. > 21), -->
+<!--     dry_day = as.integer(prcp..mm.day. < 1), -->
+<!--     rad_mj_m2 = (srad..W.m.2. * dayl..s.) / 1e6 -->
+<!--   ) %>% -->
+<!--   group_by(site, year) %>% -->
+<!--   summarize( -->
+<!--     mean_temp = mean(tmean, na.rm = T), -->
+<!--     max_temp = max(tmax..deg.c., na.rm = T), -->
+<!--     min_temp = min(tmin..deg.c., na.rm = T), -->
+
+<!--     total_prcp = sum(prcp..mm.day., na.rm = T), -->
+<!--     rain_days = sum(prcp..mm.day. >= 1, na.rm = T), -->
+
+<!--     hot_days = sum(hot_days, na.rm = T), -->
+<!--     hot_nights = sum(hot_nights, na.rm = T), -->
+
+<!--     gdd = sum(gdd, na.rm = T), -->
+<!--     total_radiation = sum(rad_mj_m2, na.rm = T), -->
+<!--     mean_vp = mean(vp..Pa., na.rm = T), -->
+
+<!--     .groups = "drop" -->
+<!--   ) -->
+<!-- ``` -->
+
+<!-- #-------ADDING WEATHER TO TRAINING AND TESTING DATA------- -->
+<!-- ```{r} -->
+<!-- train_full <- train_full %>% -->
+<!--   left_join(weather_features, by = c("site", "year")) -->
+
+<!-- test_full <- test_full %>% -->
+<!--   left_join(weather_features, by = c("site", "year")) -->
+<!-- ``` -->
+
+
+<!-- #-----------SAVING THE FINISHED AND CLEAN DATA--------- -->
+<!-- ```{r} -->
+<!-- write_csv(train_full, "../data/train_full_weather.csv") -->
+<!-- write_csv(test_full, "../data/test_full_weather.csv") -->
+<!-- ``` -->
+
+#--------LOADING FINISHED DATA SETS-------
+```{r}
+train_full <- read_csv("../data/train_full_weather.csv")
+test_full  <- read_csv("../data/test_full_weather.csv")
+```
+
+
+#-------USING 2023 AS A TEST SET-------
+```{r}
+#| message: false
+#| warning: false
+
+train_dev <- train_full %>%
+  filter(year <= 2022)
+
+test_2023 <- train_full %>%
+  filter(year == 2023)
+```
+
+```{r}
+#| message: false
+#| warning: false
+
+train_full <- train_full %>%
+  mutate(
+    site = as.character(site),
+    hybrid = as.character(hybrid),
+    previous_crop = as.character(previous_crop)
+  )
+
+test_full <- test_full %>%
+  mutate(
+    site = as.character(site),
+    hybrid = as.character(hybrid),
+    previous_crop = as.character(previous_crop)
+  )
+
+train_dev <- train_full %>%
+  filter(year <= 2022) %>%
+  mutate(
+    site = as.character(site),
+    hybrid = as.character(hybrid),
+    previous_crop = as.character(previous_crop)
+  )%>% 
+  mutate(across(soilp_h:soilp_ppm, as.numeric))
+
+
+test_2023 <- train_full %>%
+  filter(year == 2023) %>%
+  mutate(
+    site = as.character(site),
+    hybrid = as.character(hybrid),
+    previous_crop = as.character(previous_crop)
+  )
+```
+
+
+#---------CREATING THE RECIPE---------
+```{r}
+library(recipes)
+corn_recipe_xgb <- recipe(yield ~ ., data = train_dev) %>%
+  step_rm(date_planted, date_harvested) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+corn_recipe_rf <- recipe(yield ~ ., data = train_dev) %>%
+  step_rm(date_planted, date_harvested) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+```
+
+
+#---------FITTING XGBOOST---------
+```{r}
+library(tidymodels)
+xgb_spec <- boost_tree(
+  trees = 800,
+  tree_depth = 6,
+  learn_rate = 0.03,
+  min_n = 5,
+  loss_reduction = 0,
+  sample_size = 0.8,
+  mtry = 10
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+xgb_wf <- workflow() %>%
+  add_recipe(corn_recipe_xgb) %>%
+  add_model(xgb_spec)
+
+xgb_fit <- fit(xgb_wf, data = train_dev)
+
+xgb_pred_2023 <- predict(xgb_fit, test_2023) %>%
+  bind_cols(test_2023 %>% select(site, year, hybrid, yield))
+
+xgb_metrics <- metrics(xgb_pred_2023, truth = yield, estimate = .pred)
+xgb_metrics
+```
+
+#---------FITTING ---------
+
+
