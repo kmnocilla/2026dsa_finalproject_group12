@@ -19,11 +19,11 @@ library(shapviz)
 set.seed(238472)
 
 # ----------LOAD TRAINING DATA------------
-train_trait <- read_csv("data/training/training_trait.csv") %>% 
+train_trait <- read_csv("../data/training/training_trait.csv") %>% 
   clean_names() 
-train_meta <- read_csv("data/training/training_meta.csv") %>% 
+train_meta <- read_csv("../data/training/training_meta.csv") %>% 
   clean_names() 
-train_soil <- read_csv("data/training/training_soil.csv") %>% 
+train_soil <- read_csv("../data/training/training_soil.csv") %>% 
   clean_names()
 
 # ----------FIXING SOIL SITE COLUMN---------------
@@ -62,11 +62,11 @@ train_full <- train_trait_clean %>%
 
 ```{r}
 # ----------LOAD TESTING DATA------------
-test_meta <- read_csv("data/testing/testing_meta.csv") %>% 
+test_meta <- read_csv("../data/testing/testing_meta.csv") %>% 
   clean_names()
-test_soil <- read_csv("data/testing/testing_soil.csv") %>% 
+test_soil <- read_csv("../data/testing/testing_soil.csv") %>% 
   clean_names()
-test_sub  <- read_csv("data/testing/testing_submission.csv") %>% 
+test_sub  <- read_csv("../data/testing/testing_submission.csv") %>% 
   clean_names()
 
 # ----------FIXING SOIL SITE COLUMN---------------
@@ -95,7 +95,7 @@ library(slider)
 #----------CREATE PLANTING AND HARVEST WINDOWS (BY SITE)------
 site_calendar <- train_full %>%
   mutate(
-    plant_doy = yday(date_harvested),
+    plant_doy = yday(date_planted),
     harvest_doy = yday(date_harvested)
   ) %>%
   group_by(site) %>%
@@ -187,11 +187,6 @@ weather_daily <- bind_rows(weather_list)
 ```
 
 ```{r}
-names(weather_daily)
-```
-
-
-```{r}
 #------------ENGINEERING WEATHER VARIABLES------------
 weather_daily <- weather_daily %>%
   mutate(
@@ -248,22 +243,23 @@ test_full <- test_full %>%
 
 ```{r}
 #--------CREATING NEW DIRECTORY FOR FULL DATA----------
-dir.create("data/processed")
+dir.create("../data/processed")
 
 #-----------SAVING THE FINISHED AND CLEAN DATA---------
-write_csv(train_full, "data/processed/train_full_weather.csv")
-write_csv(test_full, "data/processed/test_full_weather.csv")
+write_csv(train_full, "../data/processed/train_full_weather.csv")
+write_csv(test_full, "../data/processed/test_full_weather.csv")
 ```
+
 ```{r}
 #--------LOADING FINISHED DATA SETS-------
-train_full <- read_csv("data/processed/train_full_weather.csv")
-test_full  <- read_csv("data/processed/test_full_weather.csv")
+train_full <- read_csv("../data/processed/train_full_weather.csv")
+test_full  <- read_csv("../data/processed/test_full_weather.csv")
 ```
 
 ```{r}
 #-------USING 2023 AS A TEST SET-------
 train_dev <- train_full %>%
-  filter(year <= 2022)
+  filter(year <= 2023)
 
 test_2023 <- train_full %>%
   filter(year == 2023)
@@ -305,28 +301,36 @@ test_2023 <- train_full %>%
 ```{r}
 library(recipes)
 
-#---------CREATING THE RECIPE---------
-
+#---------CREATING THE RECIPES---------
 corn_recipe_xgb <- recipe(yield ~ ., data = train_dev) %>%
   step_rm(date_planted, date_harvested) %>%
   step_impute_median(all_numeric_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
   step_dummy(all_nominal_predictors())
 
 corn_recipe_rf <- recipe(yield ~ ., data = train_dev) %>%
   step_rm(date_planted, date_harvested) %>%
   step_impute_median(all_numeric_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
   step_dummy(all_nominal_predictors())
+
+svm_recipe <- recipe(yield ~ ., data = train_dev) %>%
+  step_rm(date_planted, date_harvested) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
 ```
 
 ```{r}
 library(tidymodels)
-#---------FITTING XGBOOST---------
+
+#---------FITTING XGBOOST------------
 xgb_spec <- boost_tree(
   trees = 800,
   tree_depth = 6,
-  learn_rate = 0.03,
+  learn_rate = 0.02,
   min_n = 5,
   loss_reduction = 0,
   sample_size = 0.8,
@@ -348,13 +352,13 @@ xgb_metrics <- metrics(xgb_pred_2023, truth = yield, estimate = .pred)
 xgb_metrics
 ```
 ```{r}
-#-----------FITTING RANDOM FOREST------------
+#-----------FITTING RANDOM FOREST (ADD MORE TREES WHEN SCRIPT FINALIZED)------------
 rf_spec <- rand_forest(
-  trees = 1000,
+  trees = 300,
   mtry = 10,
   min_n = 5
 ) %>%
-  set_engine("ranger", importance = "permutation") %>%
+  set_engine("ranger") %>%
   set_mode("regression")
 
 rf_wf <- workflow() %>%
@@ -372,8 +376,39 @@ rf_metrics
 ```
 
 ```{r}
-xgb_rmse <- xgb_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
-xgb_rsq  <- xgb_metrics %>% filter(.metric == "rsq") %>% pull(.estimate)
+
+#--------------FITTING SUPPORT VECTOR MODEL (SVM)----------------
+library(tidyverse)
+library(tidymodels)
+library(kernlab)
+
+svm_spec <- svm_rbf(
+  cost = 1,
+  rbf_sigma = 0.01
+) %>%
+  set_engine("kernlab") %>%
+  parsnip::set_mode("regression")
+
+svm_wf <- workflow() %>%
+  add_recipe(svm_recipe) %>%
+  add_model(svm_spec)
+
+svm_fit <- fit(svm_wf, data = train_dev)
+
+svm_pred_2023 <- predict(svm_fit, test_2023) %>%
+  bind_cols(test_2023 %>% select(site, year, hybrid, yield))
+
+svm_metrics <- metrics(svm_pred_2023, truth = yield, estimate = .pred)
+svm_metrics
+```
+
+
+```{r}
+#----------CREATING XGBOOST GRAPH-----------
+xgb_rmse <- xgb_metrics %>% filter(.metric == "rmse") %>% 
+  pull(.estimate)
+xgb_rsq  <- xgb_metrics %>% filter(.metric == "rsq") %>% 
+  pull(.estimate)
 
 ggplot(xgb_pred_2023, aes(x = yield, y = .pred)) +
   geom_point(alpha = 0.5) +
@@ -385,6 +420,35 @@ ggplot(xgb_pred_2023, aes(x = yield, y = .pred)) +
     y = "Predicted Yield"
   ) +
   theme_minimal()
+```
+
+```{r}
+#----------CREATING RANDOM FOREST GRAPH-----------
+rf_rmse <- rf_metrics %>% filter(.metric == "rmse") %>% 
+  pull(.estimate)
+rf_rsq  <- rf_metrics %>% filter(.metric == "rsq") %>% 
+  pull(.estimate)
+
+ggplot(rf_pred_2023, aes(x = yield, y = .pred)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "Random Forest: Predicted vs Observed Yield",
+    subtitle = paste0("RMSE = ", round(rf_rmse, 2), " | R² = ", round(rf_rsq, 3)),
+    x = "Observed Yield",
+    y = "Predicted Yield"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#----------COMPARING THE TWO MODELS--------------
+bind_rows(
+  xgb_metrics %>% 
+    mutate(model = "XGBoost"),
+  rf_metrics %>% 
+    mutate(model = "Random Forest")
+)
 ```
 
 
