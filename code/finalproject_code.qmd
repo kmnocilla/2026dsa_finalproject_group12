@@ -4,7 +4,7 @@ output: html_document
 date: "2026-04-16"
 ---
 
-# ----------LOAD PACKAGES------------
+# ----------LOAD PACKAGES FOR THE PROJECT------------
 ```{r}
 
 #| message: false
@@ -169,9 +169,6 @@ train_full <- train_full %>%
   ) %>%
   left_join(site_calendar, by = "site")
 
-# test_full %>%
-#   left_join(site_calendar, by = "site") %>%
-#   names()
 
 test_full <- test_full %>%
   left_join(site_calendar, by = "site") %>%
