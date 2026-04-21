@@ -1,26 +1,7 @@
-# install.packages("tidyverse")
-# install.packages("janitor")
-# install.packages("lubridate")
-# install.packages("here")
-# install.packages("vip")
-# install.packages("xgboost")
-# install.packages("doParallel")
-# install.packages("shapviz")
-# unlink("/home/cja04613/R/x86_64-pc-linux-gnu-library/4.5/00LOCK-survival", recursive = TRUE)
-# install.packages("recipes")
-# install.packages(c("purrr", "rsample"))
-# install.packages("resample")
-# # install.packages("finetune")
-# install.packages("purrr")
-
-
-
 
 #| message: false
 #| warning: false
 
-
-.libPaths(c("/work/crss8030/instructor_data/shared_R_libs", .libPaths()))
 library(tidyverse)
 library(janitor)
 library(lubridate)
@@ -37,11 +18,8 @@ library(parsnip)
 library(daymetr)
 #library(caret)   
 
-#knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
+knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
 
-
-getwd()
-setwd("/home/cja04613/2026dsa_finalproject_group12")
 
 train_meta <- read_csv("../data/training/training_meta.csv") %>% 
   janitor::clean_names() 
@@ -59,6 +37,9 @@ train_full <- train_trait %>%
   mutate(across(soilp_h:soilp_ppm, as.numeric))
 
   summary(train_full)
+
+train_full <- train_full %>%
+  dplyr::select(-soilp_h, -om_pct, -soilk_ppm, -soilp_ppm)
 
 train_full_month <- train_full %>%
   # Selecting needed variables
@@ -123,51 +104,9 @@ table(test_meta$previous_crop)
 summary(test_soil)
 summary(test_sub)
 
- test_meta <- test_meta %>% filter (latitude >= 14.0749 & latitude <= 82.9143 &
-                  longitude >= -178.133 & longitude <= -53.0567)# information on daymet website(https://www.earthdata.nasa.gov/data/catalog/ornl-cloud-daymet-daily-v4r1-2129-4.1) shows that US is within this coordinates
-
-
-
-test_meta_weather <- test_meta %>%
-  mutate(weather = pmap(list(.y = year,
-                             .site = site,
-                             .lat = latitude,
-                             .lon = longitude),
-                        function(.y, .site, .lat, .lon)
-                          download_daymet(
-                            site = .site,
-                            lat = .lat,
-                            lon = .lon,
-                            start = .y,
-                            end = .y,
-                            simplify = T,
-                            silent = T
-                          ) %>%
-                          rename(.year = year,
-                                 .site = site
-                                 )
-
-
-                        ))
-
-test_weather <- test_meta_weather %>%
-  rename(lat = latitude,
-         lon = longitude) %>%
-  unnest(weather) %>%
-  pivot_wider(names_from = measurement,
-              values_from = value
-              ) %>%
-  janitor::clean_names() %>%
-  unnest(dayl_s: vp_pa) %>%
-  dplyr::select(site, year, lon, lat,yday, dayl_s:vp_pa)
-
-write_csv(test_weather,
-          "../data/test_weather.csv"
-          )
-
 test_weather <- read_csv("../data/test_weather.csv")
 
-test_weather_full <- test_weather %>%
+test_full <- test_weather %>%
   left_join(train_soil, by = c("site", "year")) #%>% 
   mutate(across(soilp_h:soilp_ppm, as.numeric))
 
@@ -298,8 +237,6 @@ cat(paste0("\nFound and registered ", n_cores, " cores to work with\n"))
 
 
 
-
-library(tidymodels) 
 set.seed(76544)
 
 # Create the list of CV techniques so we can loop through them
@@ -327,6 +264,7 @@ for (i in seq_along(cv_list)) {
 
 
 stopCluster(cl)
+
 
 
 library(dplyr)
@@ -379,6 +317,20 @@ best_rmse %>%
   bind_rows(best_rmse, 
             best_r2) %>%
   dplyr::select(source, everything())
+final_spec <- boost_tree(
+  trees = best_r2$trees,           # Number of boosting rounds (trees)
+  tree_depth = best_r2$tree_depth, # Maximum depth of each tree
+  min_n = best_r2$min_n,           # Minimum number of samples to split a node
+  learn_rate = best_r2$learn_rate  # Learning rate (step size shrinkage)
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+final_spec
+
+final_workflow <- workflow() %>%
+  add_model(final_spec) %>%
+  add_recipe(weather_recipe)
 
 final_spec <- boost_tree(
   trees = best_r2$trees,           # Number of boosting rounds (trees)
@@ -391,20 +343,61 @@ final_spec <- boost_tree(
 
 final_spec
 
+# all_data <- bind_rows(
+#   train_full_month %>% mutate(split = "train"),
+#   test_full_month  %>% mutate(split = "test")
+# )
+
+test_full <- test_weather %>%
+  left_join(train_soil, by = c("site", "year"))
+
+test_full_month_sum_wide <- test_full_month_sum %>%
+
+all_features <- all_data %>%
+  group_by(year, site, month_abb, split) %>%
+  summarise(
+    yield_mg_ha = mean(yield_mg_ha, na.rm = T),
+    grain_moisture = mean(grain_moisture, na.rm = T),
+
+    across(
+      c(dayl.s, srad.wm2, tmax.c, tmin.c, vp.pa),
+      mean
+    ),
+
+    prcp.mm = sum(prcp.mm),
+
+    .groups = "drop"
+  )
+
+all_wide <- all_features %>%
+  pivot_wider(
+    names_from = month_abb,
+    values_from = c(
+      dayl.s, srad.wm2, tmax.c, tmin.c, vp.pa, prcp.mm
+    ),
+    names_glue = "{.value}_{month_abb}"
+  )
+
+train_data <- all_wide %>% filter(split == "train") %>% select(-split)
+test_data  <- all_wide %>% filter(split == "test")  %>% select(-split)
+
+weather_recipe <- recipe(yield_mg_ha ~ ., data = train_data) %>%
+  step_rm(year, site) %>%
+  step_impute_mean(all_predictors())
+
+
+
+library(tidymodels)
 library(workflows)
 
-final_workflow <- workflow() %>%
+final_fit <- workflow() %>%
+  add_recipe(weather_recipe) %>%
   add_model(final_spec) %>%
-  add_recipe(weather_recipe)
+  fit(data = train_data)
 
-final_fit <- final_workflow %>%
-  fit(data = train_full_month_sum_wide)
+predictions_2024 <- test_data %>%
+  bind_cols(predict(final_fit, new_data = test_data)) %>% 
+  dplyr::select(year, site, hybrid, yield_mg_ha = .pred)
 
-set.seed(10)
-final_fit <- last_fit(final_spec,
-                weather_recipe,
-                split = weather_split)
 
-final_fit %>%
-  collect_predictions()
-
+write_csv(predictions_2024, "../output/predictions_2024.csv")
