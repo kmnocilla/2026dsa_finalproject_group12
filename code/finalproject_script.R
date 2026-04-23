@@ -9,16 +9,12 @@ library(here)
 library(vip)          
 library(xgboost)      
 library(ranger)       
+library(tidyverse)    
 library(doParallel)   
 library(shapviz)
+library(tidymodels)
 library(recipes)
-library(resample)
-library(finetune)     
-library(parsnip)
-library(daymetr)
-#library(caret)   
-
-knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
+library(rsample)
 
 
 train_meta <- read_csv("../data/training/training_meta.csv") %>% 
@@ -29,65 +25,27 @@ train_soil <- read_csv("../data/training/training_soil.csv") %>%
   janitor::clean_names()
 
 
-train_weather <- read_csv("../data/train_weather.csv")
+train_trait_clean <- train_trait %>%
+  mutate(
+    date_planted = mdy(date_planted),
+    date_harvested = mdy(date_harvested)
+  ) %>%
+  group_by(site, year, hybrid) %>%
+  summarize(
+    yield = mean(yield_mg_ha, na.rm = T),
+    grain_moisture = mean(grain_moisture, na.rm = T),
+    date_planted = min(date_planted, na.rm = T),
+    date_harvested = max(date_harvested, na.rm = T),
+    .groups = "drop"
+  )
 
-train_full <- train_trait %>%
-  left_join(train_weather, by = c("site", "year")) %>%
-  left_join(train_soil, by = c("site", "year")) #%>% 
+head(train_trait_clean)
+
+train_full <- train_trait_clean %>%
+  left_join(train_meta, by = c("site", "year")) %>%
+  left_join(train_soil, by = c("site", "year")) %>% 
   mutate(across(soilp_h:soilp_ppm, as.numeric))
 
-  summary(train_full)
-
-train_full <- train_full %>%
-  dplyr::select(-soilp_h, -om_pct, -soilk_ppm, -soilp_ppm)
-
-train_full_month <- train_full %>%
-  # Selecting needed variables
-  dplyr::select(year, site, lat, lon,
-                yield_mg_ha,
-                grain_moisture,
-                yday,
-                dayl.s = dayl_s, 
-                prcp.mm = prcp_mm_day,
-                srad.wm2 = srad_w_m_2, 
-                tmax.c = tmax_deg_c, 
-                tmin.c = tmin_deg_c,
-                vp.pa = vp_pa
-                ) %>%
-  # Creating a date class variable  
-  mutate(date_chr = paste0(year, "/", yday)) %>%
-  mutate(date = as.Date(date_chr, "%Y/%j")) %>%
-  # Extracting month from date  
-  mutate(month = month(date)) %>%
-  mutate(month_abb = month(date, label = T))
-
-train_full_month_sum <- train_full_month %>%
-  group_by(year, site, month_abb, yield_mg_ha, grain_moisture,) %>%
-  summarise(across(.cols = c(dayl.s,
-                             srad.wm2,
-                             tmax.c,
-                             tmin.c,
-                             vp.pa
-                             ),
-                   .fns = mean, 
-                   .names = "mean_{.col}"
-                   ),
-            across(.cols = prcp.mm,
-                   .fns = sum,
-                   .names = "sum_{.col}"
-                   )
-            ) %>%
-  ungroup()
-
-train_full_month_sum_wide <- train_full_month_sum %>%
-  pivot_longer(mean_dayl.s:sum_prcp.mm)%>%
-  mutate(varname = paste0(name, "_",month_abb)) %>%
-  dplyr::select(-name, -month_abb) %>% #another way of excluding some column
-  pivot_wider(names_from = varname,
-              values_from = value
-              ) %>%
-  # Rounding to one decimal point
-  mutate(across(c(3:82), ~round(., 1)))
 
 test_meta <- read_csv("../data/testing/testing_meta.csv") %>% 
   janitor::clean_names() 
@@ -104,300 +62,317 @@ table(test_meta$previous_crop)
 summary(test_soil)
 summary(test_sub)
 
-test_weather <- read_csv("../data/test_weather.csv")
+test_soil <- test_soil %>%
+  separate(site, into = c("site", "year"), sep = "_") %>%
+  mutate(year = as.integer(year)) %>%
+  group_by(site, year)
 
-test_full <- test_weather %>%
-  left_join(train_soil, by = c("site", "year")) #%>% 
-  mutate(across(soilp_h:soilp_ppm, as.numeric))
+head(test_soil)
 
-  summary(train_full)
+test_meta <- test_meta %>%
+  mutate(previous_crop = str_to_lower(previous_crop)) %>%
+  group_by(site, year)
 
-test_full_month <- test_full %>%
-  # Selecting needed variables
-  dplyr::select(year, site, lat, lon,
-                yday,
-                dayl.s = dayl_s, 
-                prcp.mm = prcp_mm_day,
-                srad.wm2 = srad_w_m_2, 
-                tmax.c = tmax_deg_c, 
-                tmin.c = tmin_deg_c,
-                vp.pa = vp_pa
-                ) %>%
-  # Creating a date class variable  
-  mutate(date_chr = paste0(year, "/", yday)) %>%
-  mutate(date = as.Date(date_chr, "%Y/%j")) %>%
-  # Extracting month from date  
-  mutate(month = month(date)) %>%
-  mutate(month_abb = month(date, label = T))
+test_full <- test_sub %>% 
+  rename(yield = yield_mg_ha) %>%
+  left_join(test_meta, by = c("site", "year")) %>%
+  left_join(test_soil, by = c("site", "year"))
 
-test_full_month_sum <- test_full_month %>%
-  group_by(year, site, month_abb) %>%
-  summarise(across(.cols = c(dayl.s,
-                             srad.wm2,
-                             tmax.c,
-                             tmin.c,
-                             vp.pa
-                             ),
-                   .fns = mean, 
-                   .names = "mean_{.col}"
-                   ),
-            across(.cols = prcp.mm,
-                   .fns = sum,
-                   .names = "sum_{.col}"
-                   )
-            ) %>%
-  ungroup()
+head(test_full)
 
-test_full_month_sum_wide <- train_full_month_sum %>%
-  pivot_longer(mean_dayl.s:sum_prcp.mm)%>%
-  mutate(varname = paste0(name, "_",month_abb)) %>%
-  dplyr::select(-name, -month_abb) %>% #another way of excluding some column
-  pivot_wider(names_from = varname,
-              values_from = value
-              ) %>%
-  # Rounding to one decimal point
-  mutate(across(c(3:9), ~round(., 1)))
+library(daymetr)
+library(slider)
 
-# Create recipe for data preprocessing
-weather_recipe <- recipe(yield_mg_ha ~ ., data = train_full_month_sum_wide) %>% # Remove identifier columns and months not in growing season
-  step_rm(
-    year,       # Remove year identifier
-    site,       # Remove site identifier
-    matches("Jan|Feb|Mar|Apr|Nov|Dec")  # Remove non-growing season months
-  ) %>% 
-
-  # updating the role of the 2 columns as ID, so they arenot used as predictors
-update_role(c(year, site), new_role = "ID")
-
-weather_prep <- weather_recipe %>% 
-  prep()
-
-xgb_spec <- #Specifying XgBoost as our model type, asking to tune the hyperparameters
-  boost_tree(
-   # Total number of boosting iterations
-  trees = tune(),
-         # Maximum depth of each tree
-  tree_depth = tune(),
-             # Minimum samples required to split a node
-  min_n = tune(),
-        # Step size shrinkage for each boosting step
-   learn_rate = tune()
-  ) %>% 
-        #specify engine 
-  set_engine("xgboost") %>% 
-       # Set to mode
-  set_mode("regression")
-xgb_spec
-
-
-library(rsample)
-
-set.seed(235) 
-resampling_foldcv <- vfold_cv(train_full_month_sum_wide, # Create 5-fold cross-validation resampling object from training data
-                              v = 10)
-
-
-# Create leave one year out cv object from the sampling data
-resampling_fold_loyo <- group_vfold_cv(train_full_month_sum_wide,
-                                       group = year
-                                       )
-
-# Create leave one location out cv object from the sampling data
-resampling_fold_loso <- group_vfold_cv(train_full_month_sum_wide,
-                                       group = site
-                                       )
-
-
-resampling_foldcv
-resampling_foldcv$splits[[1]]
-
-
-library(dials)
-
-xgb_grid <- grid_latin_hypercube(
-  tree_depth(),
-  min_n(),
-  learn_rate(),
-  trees(),
-  size = 10
-)
-
-
-# lets look into our current environment to see the available cores
-n_cores <- as.numeric(Sys.getenv("SLURM_CPUS_ON_NODE"))
-
-if (is.na(n_cores)) n_cores <- parallel::detectCores() - 1
-
-# Start the Cluster
-cl <- makePSOCKcluster(n_cores)
-
-registerDoParallel(cl)
-
-cat(paste0("\nFound and registered ", n_cores, " cores to work with\n"))
-
-
-
-set.seed(76544)
-
-# Create the list of CV techniques so we can loop through them
-cv_list <- list(
-  vfold = resampling_foldcv,
-  year = resampling_fold_loyo,
-  location = resampling_fold_loso
-  
-)
-
-# Create a empty list to store the results from the loop
-results <- list()
-# Create our loop
-for (i in seq_along(cv_list)) {
-  name <- names(cv_list) [i]
-  
-  results[[name]] <- tune_race_anova(object = xgb_spec,
-                                    preprocessor = weather_recipe,
-                                    resamples = cv_list[[i]],
-                                    grid = xgb_grid,
-                                    control = control_race(save_pred = TRUE,
-                                                           parallel_over = "everything")
-                                    )
-}
-
-
-stopCluster(cl)
-
-
-
-library(dplyr)
-
-# Create a dataframe structure from the list obtained after running the loop
-results_df <-  tibble(method = names(results),
-                      diff_cv = results
-                      ) %>% 
-  # Collect the metrices for each CV techniques using map function
-mutate(metrices = map2(diff_cv, method,
-                       ~.x %>%
-                         collect_metrics() %>% 
-                         mutate (method = .y, .before = "trees")
-                       ))
-results_df
-
-# bind all the metrices together so to select the best performing one
-all_metrices <- do.call(bind_rows, results_df$metrices)
-
-# Automating to pull the best method out of 3 we ran
-
-best_method <- all_metrices %>%
-  filter(.metric == "rmse") %>% 
-  slice_min(mean, n = 1) %>% 
-  pull(method)
-  
-
-# Getting the metrice (hyperparameter values of the best performing CV)
-best_cv_object <- results_df %>%
-  filter(method == best_method) %>%
-  pull(diff_cv) %>% 
-  first()
-  
-
-# Best RMSE
-best_rmse <- best_cv_object %>% 
-      select_best(metric = "rmse")%>% 
-  mutate(source = "best_rmse")
-
-best_rmse
-
-# Based on greatest R2
-best_r2 <- best_cv_object %>% 
-  select_best(metric = "rsq")%>% 
-  mutate(source = "best_r2")
-
-best_r2
-
-best_rmse %>% 
-  bind_rows(best_rmse, 
-            best_r2) %>%
-  dplyr::select(source, everything())
-final_spec <- boost_tree(
-  trees = best_r2$trees,           # Number of boosting rounds (trees)
-  tree_depth = best_r2$tree_depth, # Maximum depth of each tree
-  min_n = best_r2$min_n,           # Minimum number of samples to split a node
-  learn_rate = best_r2$learn_rate  # Learning rate (step size shrinkage)
-) %>%
-  set_engine("xgboost") %>%
-  set_mode("regression")
-
-final_spec
-
-final_workflow <- workflow() %>%
-  add_model(final_spec) %>%
-  add_recipe(weather_recipe)
-
-final_spec <- boost_tree(
-  trees = best_r2$trees,           # Number of boosting rounds (trees)
-  tree_depth = best_r2$tree_depth, # Maximum depth of each tree
-  min_n = best_r2$min_n,           # Minimum number of samples to split a node
-  learn_rate = best_r2$learn_rate  # Learning rate (step size shrinkage)
-) %>%
-  set_engine("xgboost") %>%
-  set_mode("regression")
-
-final_spec
-
-# all_data <- bind_rows(
-#   train_full_month %>% mutate(split = "train"),
-#   test_full_month  %>% mutate(split = "test")
-# )
-
-test_full <- test_weather %>%
-  left_join(train_soil, by = c("site", "year"))
-
-test_full_month_sum_wide <- test_full_month_sum %>%
-
-all_features <- all_data %>%
-  group_by(year, site, month_abb, split) %>%
-  summarise(
-    yield_mg_ha = mean(yield_mg_ha, na.rm = T),
-    grain_moisture = mean(grain_moisture, na.rm = T),
-
-    across(
-      c(dayl.s, srad.wm2, tmax.c, tmin.c, vp.pa),
-      mean
-    ),
-
-    prcp.mm = sum(prcp.mm),
-
+site_calendar <- train_full %>%
+  mutate(
+    plant_doy = yday(date_planted),
+    harvest_doy = yday(date_harvested)
+  ) %>%
+  group_by(site) %>%
+  summarize(
+    typical_plant_doy = round(median(plant_doy, na.rm = T)),
+    typical_harvest_doy = round(median(harvest_doy, na.rm = T)),
     .groups = "drop"
   )
 
-all_wide <- all_features %>%
-  pivot_wider(
-    names_from = month_abb,
-    values_from = c(
-      dayl.s, srad.wm2, tmax.c, tmin.c, vp.pa, prcp.mm
-    ),
-    names_glue = "{.value}_{month_abb}"
+train_full <- train_full %>%
+    mutate(
+    plant_doy = yday(date_planted),
+    harvest_doy = yday(date_harvested)
+  ) %>%
+  left_join(site_calendar, by = "site")
+
+
+test_full <- test_full %>%
+  left_join(site_calendar, by = "site") %>%
+  mutate(
+    plant_doy = typical_plant_doy,
+    harvest_doy = typical_harvest_doy
   )
 
-train_data <- all_wide %>% filter(split == "train") %>% select(-split)
-test_data  <- all_wide %>% filter(split == "test")  %>% select(-split)
 
-weather_recipe <- recipe(yield_mg_ha ~ ., data = train_data) %>%
-  step_rm(year, site) %>%
-  step_impute_mean(all_predictors())
+global_plant_doy <- round(median(train_full$plant_doy, na.rm = T))
+global_harvest_doy <- round(median(train_full$harvest_doy, na.rm = T))
+
+train_full <- train_full %>%
+  mutate(
+    plant_doy = coalesce(plant_doy, typical_plant_doy, global_plant_doy),
+    harvest_doy = coalesce(harvest_doy, typical_harvest_doy, global_harvest_doy)
+  )
+test_full <- test_full %>%
+  mutate(
+    plant_doy = coalesce(plant_doy, typical_plant_doy, global_plant_doy),
+    harvest_doy = coalesce(harvest_doy, typical_harvest_doy, global_harvest_doy)
+  )
+
+all_site_years <- bind_rows(
+  train_full %>% distinct(site, year, latitude, longitude, plant_doy, harvest_doy),
+  test_full %>% distinct(site, year, latitude, longitude, plant_doy, harvest_doy)
+) %>%
+  arrange(site, year)
+
+head(all_site_years)
+
+  all_site_years <- all_site_years %>%
+   mutate(
+     longitude = if_else(longitude > 0 & longitude < 180, -longitude, longitude)
+   )
+
+get_daymet_one <- function(site, year, lat, lon) {
+  tryCatch({
+    out <- download_daymet(
+      site = paste0(site, "_", year),
+      lat = lat,
+      lon = lon,
+      start = year,
+      end = year,
+      internal = TRUE,
+      silent = TRUE
+    )
+
+    out$data %>%
+      as_tibble() %>%
+      mutate(
+        site = site,
+        year = year
+      )
+  }, error = function(e) {
+    message(paste("Skipping:", site, year, "lat =", lat, "lon =", lon))
+    return(NULL)
+  })
+}
+
+weather_list <- purrr::pmap(
+  all_site_years,
+  ~ get_daymet_one(site = ..1, year = ..2, lat = ..3, lon = ..4)
+)
+
+weather_daily <- bind_rows(weather_list)
 
 
+weather_daily <- weather_daily %>%
+  mutate(
+    tmean = (tmax..deg.c. + tmin..deg.c.) / 2,
+    tmax_cap = pmin(tmax..deg.c., 30),
+    tmin_cap = pmax(tmin..deg.c., 10),
+    gdd10_30 = pmax(((tmax_cap + tmin_cap) / 2) - 10, 0),
+    hot_day_32 = as.integer(tmax..deg.c. > 32),
+    hot_night_21 = as.integer(tmin..deg.c. > 21),
+    dry_day = as.integer(prcp..mm.day. < 1),
+    rad_mj_m2 = (srad..W.m.2. * dayl..s.) / 1e6
+  )
+
+weather_features <- weather_daily %>%
+  mutate(
+    tmean = (tmax..deg.c. + tmin..deg.c.) / 2,
+    gdd = pmax(tmean - 10, 0),
+    hot_days = as.integer(tmax..deg.c. > 32),
+    hot_nights = as.integer(tmin..deg.c. > 21),
+    dry_day = as.integer(prcp..mm.day. < 1),
+    rad_mj_m2 = (srad..W.m.2. * dayl..s.) / 1e6
+  ) %>%
+  group_by(site, year) %>%
+  summarize(
+    mean_temp = mean(tmean, na.rm = T),
+    max_temp = max(tmax..deg.c., na.rm = T),
+    min_temp = min(tmin..deg.c., na.rm = T),
+    total_prcp = sum(prcp..mm.day., na.rm = T),
+    rain_days = sum(prcp..mm.day. >= 1, na.rm = T),
+    hot_days = sum(hot_days, na.rm = T),
+    hot_nights = sum(hot_nights, na.rm = T),
+    gdd = sum(gdd, na.rm = T),
+    total_radiation = sum(rad_mj_m2, na.rm = T),
+    mean_vp = mean(vp..Pa., na.rm = T),
+    .groups = "drop"
+  )
+
+train_full <- train_full %>%
+  left_join(weather_features, by = c("site", "year"))
+
+test_full <- test_full %>%
+  left_join(weather_features, by = c("site", "year"))
+
+write_csv(train_full, "../data/train_full_weather.csv")
+write_csv(test_full, "../data/test_full_weather.csv")
+
+train_full <- read_csv("../data/train_full_weather.csv")
+test_full  <- read_csv("../data/test_full_weather.csv")
+
+train_full <- train_full %>%
+  mutate(
+    soilp_h = as.numeric(soilp_h),
+    om_pct = as.numeric(om_pct),
+    soilk_ppm = as.numeric(soilk_ppm),
+    soilp_ppm = as.numeric(soilp_ppm)
+  )
+
+test_full <- test_full %>%
+  mutate(
+    soilp_h = as.numeric(soilp_h),
+    om_pct = as.numeric(om_pct),
+    soilk_ppm = as.numeric(soilk_ppm),
+    soilp_ppm = as.numeric(soilp_ppm)
+  )
+
+train_dev <- train_full %>%
+  filter(year < 2023) %>%
+  mutate(
+    site = as.character(site),
+    hybrid = as.character(hybrid),
+    previous_crop = as.character(previous_crop)
+  )
+
+train_dev_knn <- train_dev %>%
+  slice_sample(n = 20000)
+
+test_2023 <- train_full %>%
+  filter(year == 2023) %>%
+  mutate(
+    site = as.character(site),
+    hybrid = as.character(hybrid),
+    previous_crop = as.character(previous_crop)
+  )
+
+library(recipes)
+corn_recipe_xgb <- recipe(yield ~ ., data = train_dev) %>%
+  step_rm(date_planted, date_harvested) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors())
+
+knn_recipe <- recipe(yield ~ ., data = train_dev) %>%
+  step_rm(date_planted, date_harvested) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%   
+  step_normalize(all_numeric_predictors())
 
 library(tidymodels)
-library(workflows)
+xgb_spec <- boost_tree(
+  trees = 800,
+  tree_depth = 6,
+  learn_rate = 0.03,
+  min_n = 5,
+  loss_reduction = 0,
+  sample_size = 0.8,
+  mtry = 10
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
 
-final_fit <- workflow() %>%
-  add_recipe(weather_recipe) %>%
-  add_model(final_spec) %>%
-  fit(data = train_data)
+xgb_wf <- workflow() %>%
+  add_recipe(corn_recipe_xgb) %>%
+  add_model(xgb_spec)
 
-predictions_2024 <- test_data %>%
-  bind_cols(predict(final_fit, new_data = test_data)) %>% 
-  dplyr::select(year, site, hybrid, yield_mg_ha = .pred)
+xgb_fit <- fit(xgb_wf, data = train_dev)
+
+xgb_pred_2023 <- predict(xgb_fit, test_2023) %>%
+  bind_cols(test_2023 %>% 
+              select(site, year, hybrid, yield))
+
+xgb_metrics <- metrics(xgb_pred_2023, truth = yield, estimate = .pred)
+xgb_metrics
+
+install.packages("kknn")
+library(kknn)
+
+knn_spec <- nearest_neighbor(
+  neighbors = 5,
+  weight_func = "rectangular",
+  dist_power = 2
+) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+knn_wf <- workflow() %>%
+  add_recipe(knn_recipe) %>%
+  add_model(knn_spec)
+
+knn_fit <- fit(knn_wf, data = train_dev_knn)
+
+knn_pred_2023 <- predict(knn_fit, test_2023) %>%
+  bind_cols(test_2023 %>% 
+              select(site, year, hybrid, yield))
+
+knn_metrics <- metrics(knn_pred_2023, truth = yield, estimate = .pred)
+knn_metrics
+
+xgb_rmse <- xgb_metrics %>% 
+  filter(.metric == "rmse") %>% 
+  pull(.estimate)
+xgb_rsq  <- xgb_metrics %>% 
+  filter(.metric == "rsq") %>% 
+  pull(.estimate)
+
+ggplot(xgb_pred_2023, aes(x = yield, y = .pred)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "XGBoost: Predicted vs Observed Yield",
+    subtitle = paste0("RMSE = ", round(xgb_rmse, 2), " | R² = ", round(xgb_rsq, 3)),
+    x = "Observed Yield",
+    y = "Predicted Yield"
+  ) +
+  theme_minimal()
+
+knn_rmse <- knn_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
+knn_rsq  <- knn_metrics %>% filter(.metric == "rsq") %>% pull(.estimate)
+
+ggplot(knn_pred_2023, aes(x = yield, y = .pred)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "kNN: Predicted vs Observed Yield",
+    subtitle = paste0("RMSE = ", round(knn_rmse, 2), " | R² = ", round(knn_rsq, 3)),
+    x = "Observed Yield",
+    y = "Predicted Yield"
+  ) +
+  theme_minimal()
+
+model_comparison <- bind_rows(
+  xgb_metrics %>% mutate(model = "XGBoost"),
+  knn_metrics %>% mutate(model = "K-Nearest Neighbor (kNN)")
+)
+
+print(model_comparison)
+
+final_xgb_fit <- fit(xgb_wf, data = train_full)
+
+final_knn_fit <- fit(knn_wf, data = train_full)
+
+xgb_pred_2024 <- predict(final_xgb_fit, new_data = test_full) %>%
+  bind_cols(data_2024 %>% 
+              select(site, year, hybrid, yield)) #XGBoost predicition
+
+knn_pred_2024 <- predict(final_knn_fit, new_data = test_full) %>%
+  bind_cols(test_full %>% select(site, year, hybrid)) #knn predicition
+
+write_csv(xgb_pred_2024, "../output//xgb_predictions_2024.csv")
+write_csv(knn_pred_2024, "../output//knn_predictions_2024.csv")
 
 
-write_csv(predictions_2024, "../output/predictions_2024.csv")
+
+
+
+knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
