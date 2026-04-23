@@ -327,18 +327,16 @@ test_full  <- read_csv("../data/test_full_weather.csv")
 ```{r}
 train_full <- train_full %>%
   mutate(
-    soilp_h = as.numeric(soilp_h),
-    om_pct = as.numeric(om_pct),
-    soilk_ppm = as.numeric(soilk_ppm),
-    soilp_ppm = as.numeric(soilp_ppm)
+    grain_moisture = as.numeric(grain_moisture),
+    date_planted = as.character(date_planted),
+    date_harvested = as.character(date_harvested)
   )
 
 test_full <- test_full %>%
   mutate(
-    soilp_h = as.numeric(soilp_h),
-    om_pct = as.numeric(om_pct),
-    soilk_ppm = as.numeric(soilk_ppm),
-    soilp_ppm = as.numeric(soilp_ppm)
+    grain_moisture = as.numeric(grain_moisture),
+    date_planted = as.character(date_planted),
+    date_harvested = as.character(date_harvested)
   )
 ```
 
@@ -371,7 +369,7 @@ test_2023 <- train_full %>%
 ```{r}
 library(recipes)
 corn_recipe_xgb <- recipe(yield ~ ., data = train_dev) %>%
-  step_rm(date_planted, date_harvested) %>%
+  step_rm(grain_moisture, date_planted, date_harvested) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
   step_dummy(all_nominal_predictors())
@@ -398,17 +396,18 @@ xgb_spec <- boost_tree(
   mtry = 10
 ) %>%
   set_engine("xgboost") %>%
-  set_mode("regression")
+  parsnip::set_mode("regression")
 
 xgb_wf <- workflow() %>%
   add_recipe(corn_recipe_xgb) %>%
   add_model(xgb_spec)
 
 xgb_fit <- fit(xgb_wf, data = train_dev)
+final_xgb_fit <- fit(xgb_wf, data = train_full)
 
-xgb_pred_2023 <- predict(xgb_fit, test_2023) %>%
-  bind_cols(test_2023 %>% 
-              select(site, year, hybrid, yield))
+pred_2024 <- predict(final_xgb_fit, test_full) %>%
+  bind_cols(test_full %>% select(site, year, hybrid)) %>%
+  rename(predicted_yield = .pred)
 
 xgb_metrics <- metrics(xgb_pred_2023, truth = yield, estimate = .pred)
 xgb_metrics
@@ -464,8 +463,12 @@ ggplot(xgb_pred_2023, aes(x = yield, y = .pred)) +
 
 #------------PLOTTING K-NEAREST NEIGHBOR-----------
 ```{r}
-knn_rmse <- knn_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
-knn_rsq  <- knn_metrics %>% filter(.metric == "rsq") %>% pull(.estimate)
+knn_rmse <- knn_metrics %>% 
+  filter(.metric == "rmse") %>% 
+  pull(.estimate)
+knn_rsq  <- knn_metrics %>% 
+  filter(.metric == "rsq") %>% 
+  pull(.estimate)
 
 ggplot(knn_pred_2023, aes(x = yield, y = .pred)) +
   geom_point(alpha = 0.4) +
@@ -482,8 +485,10 @@ ggplot(knn_pred_2023, aes(x = yield, y = .pred)) +
 #--------------COMPARING MODELS------------
 ```{r}
 model_comparison <- bind_rows(
-  xgb_metrics %>% mutate(model = "XGBoost"),
-  knn_metrics %>% mutate(model = "K-Nearest Neighbor (kNN)")
+  xgb_metrics %>% 
+    mutate(model = "XGBoost"),
+  knn_metrics %>% 
+    mutate(model = "K-Nearest Neighbor (kNN)")
 )
 
 print(model_comparison)
@@ -491,21 +496,26 @@ print(model_comparison)
 
 #-----------REFIT FINAL MODEL ON ALL TRAINING DATA
 ```{r}
-
+final_xgb_fit <- fit(xgb_wf, data = train_full)
 ```
 
 #------------PREDICT 2024-------------------
 ```{r}
-
+pred_2024 <- predict(final_xgb_fit, test_full) %>%
+  bind_cols(test_full %>% 
+              select(site, year, hybrid)) %>%
+  rename(predicted_yield = .pred)
 ```
 
 #--------------SAVE PREDICTIONS------------
 ```{r}
-
+write_csv(pred_2024, "../data/processed/predicted_yield_2024.csv")
 ```
 
 #-------------VARIABLE IMPORTANCE------------
 ```{r}
-
+final_xgb_fit %>%
+  extract_fit_parsnip() %>%
+  vip(num_features = 15)
 ```
 
