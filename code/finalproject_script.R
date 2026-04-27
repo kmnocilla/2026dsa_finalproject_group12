@@ -138,37 +138,43 @@ head(all_site_years)
      longitude = if_else(longitude > 0 & longitude < 180, -longitude, longitude)
    )
 
-get_daymet_one <- function(site, year, lat, lon) {
-  tryCatch({
-    out <- download_daymet(
-      site = paste0(site, "_", year),
-      lat = lat,
-      lon = lon,
-      start = year,
-      end = year,
-      internal = TRUE,
-      silent = TRUE
-    )
+# get_daymet_one <- function(site, year, lat, lon) {
+#   tryCatch({
+#     out <- download_daymet(
+#       site = paste0(site, "_", year),
+#       lat = lat,
+#       lon = lon,
+#       start = year,
+#       end = year,
+#       internal = TRUE,
+#       silent = TRUE
+#     )
+# 
+#     out$data %>%
+#       as_tibble() %>%
+#       mutate(
+#         site = site,
+#         year = year
+#       )
+#   }, error = function(e) {
+#     message(paste("Skipping:", site, year, "lat =", lat, "lon =", lon))
+#     return(NULL)
+#   })
+# }
+# 
+# weather_list <- purrr::pmap(
+#   all_site_years,
+#   ~ get_daymet_one(site = ..1, year = ..2, lat = ..3, lon = ..4)
+# )
+# 
+# weather_daily <- bind_rows(weather_list)
+# 
+# 
+# write_csv(weather_daily,
+#           "../data/weather_daily.csv"
+#           ) #saving pulled weather data to avoid repeated pulling
 
-    out$data %>%
-      as_tibble() %>%
-      mutate(
-        site = site,
-        year = year
-      )
-  }, error = function(e) {
-    message(paste("Skipping:", site, year, "lat =", lat, "lon =", lon))
-    return(NULL)
-  })
-}
-
-weather_list <- purrr::pmap(
-  all_site_years,
-  ~ get_daymet_one(site = ..1, year = ..2, lat = ..3, lon = ..4)
-)
-
-weather_daily <- bind_rows(weather_list)
-
+weather_daily <- read_csv("../data/weather_daily.csv") # first load saved weather data
 
 weather_daily <- weather_daily %>%
   mutate(
@@ -363,10 +369,10 @@ final_knn_fit <- fit(knn_wf, data = train_full)
 
 xgb_pred_2024 <- predict(final_xgb_fit, new_data = test_full) %>%
   bind_cols(data_2024 %>% 
-              select(site, year, hybrid, yield)) #XGBoost predicition
+              select(site, year, hybrid, yield)) #XGBoost predictions
 
 knn_pred_2024 <- predict(final_knn_fit, new_data = test_full) %>%
-  bind_cols(test_full %>% select(site, year, hybrid)) #knn predicition
+  bind_cols(test_full %>% select(site, year, hybrid)) #knn predictions
 
 write_csv(xgb_pred_2024, "../output//xgb_predictions_2024.csv")
 write_csv(knn_pred_2024, "../output//knn_predictions_2024.csv")

@@ -555,6 +555,6 @@ write_csv(knn_pred_2024, "../output//knn_predictions_2024.csv")
 
 
 ```{r}
-knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
+#knitr::purl("finalproject_code.qmd", output = "finalproject_script.R", documentation = 0)
 ```
 
