@@ -1,4 +1,3 @@
-
 #
 # This is a Shiny web application. You can run the application by clicking
 # the 'Run App' button above.
@@ -14,13 +13,12 @@ library(tidyverse)
 library(tidymodels)
 library(bslib)
 
-# Load model + data
 final_xgb_fit <- readRDS("../output/final_xgb_fit.rds")
 final_train_reference <- readRDS("../output/final_train_reference.rds")
+
 xgb_pred_2023 <- readRDS("../output/xgb_pred_2023.rds")
 xgb_metrics <- readRDS("../output/xgb_metrics.rds")
 
-# Clean previous crop names
 final_train_reference <- final_train_reference %>%
   mutate(
     previous_crop_clean = case_when(
@@ -36,7 +34,7 @@ final_train_reference <- final_train_reference %>%
     )
   )
 
-# ---------------- UI ---------------- #
+titlePanel(tagList(icon("seedling"), "Corn Yield Prediction App"))
 
 ui <- page_sidebar(
   title = "Corn Yield Prediction App",
@@ -49,52 +47,31 @@ ui <- page_sidebar(
     width = 360,
     h4("Input Conditions"),
     
-    # --- Site & Hybrid ---
-    selectInput(
-      "site",
-      tagList(icon("map-marker-alt"), "Site"),
-      choices = sort(unique(final_train_reference$site))
-    ),
+    selectInput("site", tagList(icon("map-marker-alt"), "Site:"),
+                choices = sort(unique(final_train_reference$site))),
     
-    selectInput(
-      "hybrid",
-      tagList(icon("seedling"), "Hybrid"),
-      choices = sort(unique(final_train_reference$hybrid))
-    ),
+    selectInput("hybrid", tagList(icon("seedling"), "Hybrid:"),
+                choices = sort(unique(final_train_reference$hybrid))),
     
-    selectInput(
-      "previous_crop_clean",
-      tagList(icon("leaf"), "Previous Crop"),
-      choices = c("Soybean","Corn","Wheat/Small grains","Peanut","Sorghum","Cotton","Clover","Fallow","Other")
-    ),
+    selectInput("previous_crop_clean", tagList(icon("leaf"), "Previous crop:"),
+                choices = c("Soybean","Corn","Wheat/Small grains","Peanut","Sorghum","Cotton","Clover","Fallow","Other")),
     
-    numericInput("year", "Year", value = 2024),
+    numericInput("year", "Year:", value = 2024),
     
-    # --- Dates ---
-    h5("Dates"),
-    dateInput("plant_date", tagList(icon("calendar"), "Planting Date"), value = Sys.Date()),
-    dateInput("harvest_date", tagList(icon("calendar-check"), "Harvest Date"), value = Sys.Date()),
+    dateInput("plant_date", tagList(icon("calendar"), "Planting date:"), value = Sys.Date()),
+    dateInput("harvest_date", tagList(icon("calendar-check"), "Harvest date:"), value = Sys.Date()),
     
-    # --- Soil ---
-    h5("Soil Properties"),
-    numericInput("soilp_h", "Soil pH", value = 6.5),
-    numericInput("om_pct", "Organic Matter (%)", value = 2.5),
-    numericInput("soilk_ppm", "Soil K (ppm)", value = 120),
-    numericInput("soilp_ppm", "Soil P (ppm)", value = 45),
+    numericInput("soilp_h", "Soil pH:", value = 6.5),
+    numericInput("om_pct", "Organic matter (%):", value = 2.5),
+    numericInput("soilk_ppm", "Soil K:", value = 120),
+    numericInput("soilp_ppm", "Soil P:", value = 45),
     
-    # --- Weather ---
-    h5("Weather"),
-    numericInput("mean_temp", "Mean Temperature (°C)", value = 22),
-    numericInput("total_prcp", "Total Precipitation (mm)", value = 500),
+    numericInput("mean_temp", "Mean temp:", value = 22),
+    numericInput("total_prcp", "Precipitation:", value = 500),
     
-    actionButton(
-      "predict_btn",
-      tagList(icon("chart-line"), "Predict Yield"),
-      class = "btn-success mt-3"
-    )
+    actionButton("predict_btn", tagList(icon("chart-line"), "Predict Yield"), class = "btn-success")
   ),
   
-  # --- Output Cards ---
   layout_columns(
     
     card(
@@ -115,11 +92,9 @@ ui <- page_sidebar(
   )
 )
 
+
 server <- function(input, output) {
   
-  # -------------------------
-  #   Generate Prediction
-  # -------------------------
   prediction <- eventReactive(input$predict_btn, {
     
     new_data <- tibble(
@@ -128,33 +103,29 @@ server <- function(input, output) {
       hybrid = input$hybrid,
       previous_crop = input$previous_crop_clean,
       
-      # Soil
       soilp_h = input$soilp_h,
       om_pct = input$om_pct,
       soilk_ppm = input$soilk_ppm,
       soilp_ppm = input$soilp_ppm,
       
-      # Dates → DOY
       plant_doy = lubridate::yday(input$plant_date),
       harvest_doy = lubridate::yday(input$harvest_date),
       typical_plant_doy = lubridate::yday(input$plant_date),
       typical_harvest_doy = lubridate::yday(input$harvest_date),
       
-      # Weather
       mean_temp = input$mean_temp,
       max_temp = input$mean_temp,
       min_temp = input$mean_temp,
       total_prcp = input$total_prcp,
       
-      # Fixed weather summary values
       rain_days = 30,
       hot_days = 10,
       hot_nights = 10,
       
-      # Reference medians
       gdd = median(final_train_reference$gdd, na.rm = TRUE),
       total_radiation = median(final_train_reference$total_radiation, na.rm = TRUE),
       mean_vp = median(final_train_reference$mean_vp, na.rm = TRUE),
+      
       latitude = median(final_train_reference$latitude, na.rm = TRUE),
       longitude = median(final_train_reference$longitude, na.rm = TRUE)
     )
@@ -162,12 +133,9 @@ server <- function(input, output) {
     predict(final_xgb_fit, new_data = new_data)
   })
   
-  
-  # -------------------------
-  #   Prediction Output
-  # -------------------------
   output$prediction_output <- renderText({
     req(prediction())
+    
     pred <- prediction()
     
     paste0(
@@ -177,28 +145,20 @@ server <- function(input, output) {
     )
   })
   
-  
-  # -------------------------
-  #   Input Summary
-  # -------------------------
   output$input_summary <- renderText({
-    paste(
-      "Site:", input$site,
-      "\nHybrid:", input$hybrid,
-      "\nPrevious crop:", input$previous_crop_clean,
-      "\nPlanting date:", input$plant_date,
-      "\nHarvest date:", input$harvest_date
+    paste0(
+      "Site: ", input$site, "\n",
+      "Hybrid: ", input$hybrid, "\n",
+      "Previous crop: ", input$previous_crop_clean, "\n",
+      "Planting date: ", input$plant_date, "\n",
+      "Harvest date: ", input$harvest_date
     )
   })
   
-  
-  # -------------------------
-  #   Model Performance Plot
-  # -------------------------
   output$xgb_performance_plot <- renderPlot({
     xgb_pred_2023 %>%
       ggplot(aes(x = yield, y = .pred)) +
-      geom_point(alpha = 0.5, color = "#2C7A4B") +
+      geom_point(alpha = 0.5) +
       geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
       labs(
         title = "XGBoost: Predicted vs Observed Yield",
@@ -208,15 +168,13 @@ server <- function(input, output) {
       theme_minimal()
   })
   
-  
-  # -------------------------
-  #   Model Metrics Table
-  # -------------------------
   output$xgb_metrics_table <- renderTable({
     xgb_metrics %>%
       select(.metric, .estimate) %>%
       mutate(.estimate = round(.estimate, 3))
   })
 }
+  
+
 
 shinyApp(ui = ui, server = server)
